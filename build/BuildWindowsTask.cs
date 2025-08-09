@@ -18,16 +18,16 @@ public sealed class BuildWindowsTask : FrostingTask<BuildContext>
         context.StartProcess("cmake", new ProcessSettings { WorkingDirectory = buildWorkingDir, Arguments = "../mojoshader/CMakeLists.txt -DPROFILE_SPIRV=OFF -DPROFILE_GLSPIRV=OFF" });
 
         // Fix generated projects using the same obj folder
-        var dirProps = @"""
+        var dirProps = @"
         <Project>
             <PropertyGroup>
                     <BaseIntermediateOutputPath>$(MSBuildProjectDirectory)\obj\$(MSBuildProjectName)</BaseIntermediateOutputPath>
             </PropertyGroup>
         </Project>
-        """;
+        ";
         context.FileWriteText(System.IO.Path.Combine(buildWorkingDir, "Directory.Build.props"), dirProps);
 
         context.StartProcess("cmake", new ProcessSettings { WorkingDirectory = buildWorkingDir, Arguments = "--build ." });
-        context.CopyFile(System.IO.Path.Combine(buildWorkingDir, "mojoshader.dll"), $"{context.ArtifactsDir}/mojoshader.dll");
+        context.CopyFile(System.IO.Path.Combine(buildWorkingDir, "Release", "mojoshader.dll"), $"{context.ArtifactsDir}/mojoshader.dll");
     }
 }
