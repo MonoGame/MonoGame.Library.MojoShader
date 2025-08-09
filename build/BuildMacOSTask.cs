@@ -11,7 +11,7 @@ public sealed class BuildMacOSTask : FrostingTask<BuildContext>
 
     public override void Run(BuildContext context)
     {
-        var buildWorkingDir = "build/";
+        var buildWorkingDir = "mojoshaderbuild/";
         context.ReplaceTextInFiles("mojoshader/CMakeLists.txt", "ADD_LIBRARY(mojoshader", "ADD_LIBRARY(mojoshader SHARED ");
         context.ReplaceRegexInFiles("mojoshader/CMakeLists.txt", @"find_package\(SDL2\).+?ENDIF\(SDL2_FOUND\)", "", RegexOptions.Singleline);
         context.StartProcess("cmake", new ProcessSettings { WorkingDirectory = buildWorkingDir, Arguments = "../mojoshader/CMakeLists.txt -DCMAKE_OSX_ARCHITECTURES=\"x86_64;arm64\" -DPROFILE_SPIRV=OFF -DPROFILE_GLSPIRV=OFF" });
