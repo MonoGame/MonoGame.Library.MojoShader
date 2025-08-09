@@ -27,7 +27,10 @@ public sealed class BuildWindowsTask : FrostingTask<BuildContext>
         ";
         context.FileWriteText(System.IO.Path.Combine(buildWorkingDir, "Directory.Build.props"), dirProps);
 
-        context.StartProcess("cmake", new ProcessSettings { WorkingDirectory = buildWorkingDir, Arguments = "--build ." });
+        // Statically link VC runtime
+        context.ReplaceTextInFiles(System.IO.Path.Combine(buildWorkingDir, "mojoshader.vcxproj"), "MultiThreadedDLL", "MultiThreaded");
+
+        context.StartProcess("cmake", new ProcessSettings { WorkingDirectory = buildWorkingDir, Arguments = "--build . --config release" });
         context.CopyFile(System.IO.Path.Combine(buildWorkingDir, "Release", "mojoshader.dll"), $"{context.ArtifactsDir}/mojoshader.dll");
     }
 }
