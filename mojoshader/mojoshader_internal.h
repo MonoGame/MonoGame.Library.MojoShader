@@ -15,7 +15,7 @@
 #include <assert.h>
 
 #ifndef DLLEXPORT
-#if _MSC_VER && _DLL
+#ifdef _WIN32
 #define DLLEXPORT __declspec(dllexport)
 #else
 #define DLLEXPORT
