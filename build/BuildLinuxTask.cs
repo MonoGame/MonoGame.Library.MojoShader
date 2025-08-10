@@ -13,9 +13,7 @@ public sealed class BuildLinuxTask : FrostingTask<BuildContext>
     {
         var buildWorkingDir = "mojoshaderbuild/";
         context.CreateDirectory(buildWorkingDir);
-        context.ReplaceTextInFiles("mojoshader/CMakeLists.txt", "ADD_LIBRARY(mojoshader", "ADD_LIBRARY(mojoshader SHARED ");
-        context.ReplaceRegexInFiles("mojoshader/CMakeLists.txt", @"find_package\(SDL2\).+?ENDIF\(SDL2_FOUND\)", "", RegexOptions.Singleline);
-        context.StartProcess("cmake", new ProcessSettings { WorkingDirectory = buildWorkingDir, Arguments = "../mojoshader/CMakeLists.txt -DCMAKE_OSX_ARCHITECTURES=\"x86_64;arm64\" -DPROFILE_SPIRV=OFF -DPROFILE_GLSPIRV=OFF" });
+        context.StartProcess("cmake", new ProcessSettings { WorkingDirectory = buildWorkingDir, Arguments = "../mojoshader/CMakeLists.txt -DCMAKE_OSX_ARCHITECTURES=\"x86_64;arm64\"" });
         context.StartProcess("cmake", new ProcessSettings { WorkingDirectory = buildWorkingDir, Arguments = "--build . --config release" });
         context.CopyFile(System.IO.Path.Combine(buildWorkingDir, "libmojoshader.so"), $"{context.ArtifactsDir}/libmojoshader.so");
     }

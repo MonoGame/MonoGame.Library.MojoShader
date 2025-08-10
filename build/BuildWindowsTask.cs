@@ -13,9 +13,7 @@ public sealed class BuildWindowsTask : FrostingTask<BuildContext>
     {
         var buildWorkingDir = "mojoshaderbuild/";
         context.CreateDirectory(buildWorkingDir);
-        context.ReplaceTextInFiles("mojoshader/CMakeLists.txt", "ADD_LIBRARY(mojoshader", "ADD_LIBRARY(mojoshader SHARED ");
-        context.ReplaceRegexInFiles("mojoshader/CMakeLists.txt", @"find_package\(SDL2\).+?ENDIF\(SDL2_FOUND\)", "", RegexOptions.Singleline);
-        context.StartProcess("cmake", new ProcessSettings { WorkingDirectory = buildWorkingDir, Arguments = "../mojoshader/CMakeLists.txt -DPROFILE_SPIRV=OFF -DPROFILE_GLSPIRV=OFF" });
+        context.StartProcess("cmake", new ProcessSettings { WorkingDirectory = buildWorkingDir, Arguments = "../mojoshader/CMakeLists.txt" });
 
         // Fix generated projects using the same obj folder
         var dirProps = @"
