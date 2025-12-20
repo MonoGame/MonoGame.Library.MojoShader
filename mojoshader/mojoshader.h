@@ -28,7 +28,7 @@ extern "C" {
 #endif
 
 #ifndef DECLSPEC
-#ifdef _WIN32
+#if _MSC_VER && _DLL
 #define DECLSPEC __declspec(dllexport)
 #else
 #define DECLSPEC
