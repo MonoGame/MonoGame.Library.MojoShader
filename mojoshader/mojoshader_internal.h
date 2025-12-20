@@ -8,32 +8,147 @@
 // Shader bytecode format is described at MSDN:
 //  http://msdn.microsoft.com/en-us/library/ff569705.aspx
 
+#ifdef MOJOSHADER_USE_SDL_STDLIB
+#ifdef USE_SDL3 /* Private define, for now */
+#include <SDL3/SDL_assert.h>
+#include <SDL3/SDL_endian.h>
+#include <SDL3/SDL_stdinc.h>
+#include <SDL3/SDL_loadso.h>
+#else
+#include <SDL_assert.h>
+#include <SDL_endian.h>
+#include <SDL_stdinc.h>
+#include <SDL_loadso.h>
+#endif
+#include <math.h> /* Needed for isinf/isnan :( */
+
+/* FIXME: These includes are needed for alloca :( */
+#include <stdlib.h>
+#if defined(__linux__) || defined(__sun)
+#include <alloca.h>
+#endif
+#ifdef _MSC_VER
+#include <malloc.h>
+#endif
+
+/* stdint.h */
+typedef Uint8 uint8;
+typedef Uint16 uint16;
+typedef Uint32 uint32;
+typedef Sint32 int32;
+typedef Sint64 int64;
+typedef Uint64 uint64;
+
+/* assert.h */
+#define assert SDL_assert
+
+/* stdlib.h */
+#define malloc SDL_malloc
+#define free SDL_free
+
+/* stdio.h */
+#define sscanf SDL_sscanf
+#ifdef snprintf
+#undef snprintf
+#endif
+#define snprintf SDL_snprintf
+#ifdef vsnprintf
+#undef vsnprintf
+#endif
+#define vsnprintf SDL_vsnprintf
+
+/* math.h */
+#define acos SDL_acos
+#define asin SDL_asin
+#define atan SDL_atan
+#define atan2 SDL_atan2
+#define cos SDL_cos
+#define exp SDL_exp
+#define floor SDL_floor
+#define log SDL_log
+#define sin SDL_sin
+#define sqrt SDL_sqrt
+
+/* string.h */
+#ifdef memcmp
+#undef memcmp
+#endif
+#define memcmp SDL_memcmp
+#ifdef memcpy
+#undef memcpy
+#endif
+#define memcpy SDL_memcpy
+#ifdef memset
+#undef memset
+#endif
+#define memset SDL_memset
+#ifdef strchr
+#undef strchr
+#endif
+#define strchr SDL_strchr
+#ifdef strcmp
+#undef strcmp
+#endif
+#define strcmp SDL_strcmp
+#ifdef strlen
+#undef strlen
+#endif
+#define strlen SDL_strlen
+#ifdef strncmp
+#undef strncmp
+#endif
+#define strncmp SDL_strncmp
+#ifdef strstr
+#undef strstr
+#endif
+#define strstr SDL_strstr
+#ifdef strcat
+#undef strcat
+#endif
+/* TODO: Move MojoShader away from strcat! This len is awful! */
+#define strcat(dst, src) SDL_strlcat(dst, src, SDL_strlen(src) + 1)
+#ifdef strcpy
+#undef strcpy
+#endif
+/* TODO: Move MojoShader away from strcpy! This len is awful! */
+#define strcpy(dst, src) SDL_strlcpy(dst, src, SDL_strlen(src) + 1)
+
+/* ctype.h */
+#ifdef isalnum
+#undef isalnum
+#endif
+#define isalnum SDL_isalnum
+
+/* endian.h */
+#define MOJOSHADER_BIG_ENDIAN (SDL_BYTEORDER == SDL_BIG_ENDIAN)
+
+/* dlfcn.h */
+#define dlopen(a, b) SDL_LoadObject(a)
+#define dlclose SDL_UnloadObject
+#define dlsym SDL_LoadFunction
+#else /* MOJOSHADER_USE_SDL_STDLIB */
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdarg.h>
 #include <assert.h>
 
-#ifndef DLLEXPORT
-#ifdef _WIN32
-#define DLLEXPORT __declspec(dllexport)
+#ifdef __BYTE_ORDER__
+#define MOJOSHADER_BIG_ENDIAN (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
+#elif defined(__linux__)
+#include <endian.h>
+#define MOJOSHADER_BIG_ENDIAN (__BYTE_ORDER == __BIG_ENDIAN)
 #else
-#define DLLEXPORT
+/* TODO: Detect little endian PowerPC? */
+#if defined(__POWERPC__) || defined(__powerpc__)
+#define MOJOSHADER_BIG_ENDIAN 1
+#else
+#define MOJOSHADER_BIG_ENDIAN 0
 #endif
 #endif
+#endif /* MOJOSHADER_USE_SDL_STDLIB */
 
 #include "mojoshader.h"
-
-#define DEBUG_LEXER 0
-#define DEBUG_PREPROCESSOR 0
-#define DEBUG_ASSEMBLER_PARSER 0
-#define DEBUG_COMPILER_PARSER 0
-#define DEBUG_TOKENIZER \
-    (DEBUG_PREPROCESSOR || DEBUG_ASSEMBLER_PARSER || DEBUG_LEXER)
-
-#if (defined(__APPLE__) && defined(__MACH__))
-//#define PLATFORM_MACOSX 1
-#endif
 
 // This is the highest shader version we currently support.
 
@@ -52,12 +167,24 @@
 #define SUPPORT_PROFILE_BYTECODE 1
 #endif
 
+#ifndef SUPPORT_PROFILE_HLSL
+#define SUPPORT_PROFILE_HLSL 1
+#endif
+
 #ifndef SUPPORT_PROFILE_GLSL
 #define SUPPORT_PROFILE_GLSL 1
 #endif
 
 #ifndef SUPPORT_PROFILE_GLSL120
 #define SUPPORT_PROFILE_GLSL120 1
+#endif
+
+#ifndef SUPPORT_PROFILE_GLSLES
+#define SUPPORT_PROFILE_GLSLES 1
+#endif
+
+#ifndef SUPPORT_PROFILE_GLSLES3
+#define SUPPORT_PROFILE_GLSLES3 1
 #endif
 
 #ifndef SUPPORT_PROFILE_ARB1
@@ -68,6 +195,18 @@
 #define SUPPORT_PROFILE_ARB1_NV 1
 #endif
 
+#ifndef SUPPORT_PROFILE_METAL
+#define SUPPORT_PROFILE_METAL 1
+#endif
+
+#ifndef SUPPORT_PROFILE_SPIRV
+#define SUPPORT_PROFILE_SPIRV 1
+#endif
+
+#ifndef SUPPORT_PROFILE_GLSPIRV
+#define SUPPORT_PROFILE_GLSPIRV 1
+#endif
+
 #if SUPPORT_PROFILE_ARB1_NV && !SUPPORT_PROFILE_ARB1
 #error nv profiles require arb1 profile. Fix your build.
 #endif
@@ -76,11 +215,24 @@
 #error glsl120 profile requires glsl profile. Fix your build.
 #endif
 
+#if SUPPORT_PROFILE_GLSLES && !SUPPORT_PROFILE_GLSL
+#error glsles profile requires glsl profile. Fix your build.
+#endif
 
-// Other stuff you can disable...
+#if SUPPORT_PROFILE_GLSLES3 && !SUPPORT_PROFILE_GLSLES
+#error glsles3 profile requires glsles profile. Fix your build.
+#endif
 
-// This removes the preshader parsing and execution code. You can save some
-//  bytes if you have normal shaders and not Effect files.
+
+#if SUPPORT_PROFILE_GLSPIRV && !SUPPORT_PROFILE_SPIRV
+#error glspirv profile requires spirv profile. Fix your build.
+#endif
+
+// Microsoft's preprocessor has some quirks. In some ways, it doesn't work
+//  like you'd expect a C preprocessor to function.
+#ifndef MATCH_MICROSOFT_PREPROCESSOR
+#define MATCH_MICROSOFT_PREPROCESSOR 1
+#endif
 
 
 // Get basic wankery out of the way here...
@@ -93,9 +245,21 @@
 
 typedef unsigned int uint;  // this is a printf() helper. don't use for code.
 
+// Locale-independent float printing replacement for snprintf
+size_t MOJOSHADER_printFloat(char *text, size_t maxlen, float arg);
+
+#ifdef _MSC_VER
+#include <float.h>
+#define isnan _isnan // !!! FIXME: not a safe replacement!
+#if _MSC_VER < 1900 // pre MSVC 2015
+#define isinf(x) (!_finite(x)) // FIXME: not a safe replacement!
+#endif
+#define va_copy(a, b) a = b
+#endif
+
+#ifndef MOJOSHADER_USE_SDL_STDLIB
 #ifdef _MSC_VER
 #include <malloc.h>
-#define va_copy(a, b) a = b
 #define snprintf _snprintf  // !!! FIXME: not a safe replacement!
 #define vsnprintf _vsnprintf  // !!! FIXME: not a safe replacement!
 #define strcasecmp stricmp
@@ -125,10 +289,7 @@ typedef int32_t int32;
 typedef int64_t int64;
 typedef uint64_t uint64;
 #endif
-
-#ifdef sun
-#include <alloca.h>
-#endif
+#endif /* MOJOSHADER_USE_SDL_STDLIB */
 
 #ifdef __GNUC__
 #define ISPRINTF(x,y) __attribute__((format (printf, x, y)))
@@ -141,7 +302,7 @@ typedef uint64_t uint64;
 
 // Byteswap magic...
 
-#if ((defined __GNUC__) && (defined __POWERPC__))
+#if (defined(__GNUC__) && MOJOSHADER_BIG_ENDIAN && (defined(__POWERPC__) || defined(__powerpc__)))
     static inline uint32 SWAP32(uint32 x)
     {
         __asm__ __volatile__("lwbrx %0,0,%1" : "=r" (x) : "r" (&x));
@@ -152,7 +313,7 @@ typedef uint64_t uint64;
         __asm__ __volatile__("lhbrx %0,0,%1" : "=r" (x) : "r" (&x));
         return x;
     } // SWAP16
-#elif defined(__POWERPC__)
+#elif MOJOSHADER_BIG_ENDIAN
     static inline uint32 SWAP32(uint32 x)
     {
         return ( (((x) >> 24) & 0x000000FF) | (((x) >>  8) & 0x0000FF00) |
@@ -180,16 +341,16 @@ static inline int Min(const int a, const int b)
 typedef struct HashTable HashTable;
 typedef uint32 (*HashTable_HashFn)(const void *key, void *data);
 typedef int (*HashTable_KeyMatchFn)(const void *a, const void *b, void *data);
-typedef void (*HashTable_NukeFn)(const void *key, const void *value, void *data);
+typedef void (*HashTable_NukeFn)(const void *ctx, const void *key, const void *value, void *data);
 
 HashTable *hash_create(void *data, const HashTable_HashFn hashfn,
                        const HashTable_KeyMatchFn keymatchfn,
                        const HashTable_NukeFn nukefn,
                        const int stackable,
                        MOJOSHADER_malloc m, MOJOSHADER_free f, void *d);
-void hash_destroy(HashTable *table);
+void hash_destroy(HashTable *table, const void *ctx);
 int hash_insert(HashTable *table, const void *key, const void *value);
-int hash_remove(HashTable *table, const void *key);
+int hash_remove(HashTable *table, const void *key, const void *ctx);
 int hash_find(const HashTable *table, const void *key, const void **_value);
 int hash_iter(const HashTable *table, const void *key, const void **_value, void **iter);
 int hash_iter_keys(const HashTable *table, const void **_key, void **iter);
@@ -216,6 +377,7 @@ const char *stringcache(StringCache *cache, const char *str);
 const char *stringcache_len(StringCache *cache, const char *str,
                             const unsigned int len);
 const char *stringcache_fmt(StringCache *cache, const char *fmt, ...);
+int stringcache_iscached(StringCache *cache, const char *str);
 void stringcache_destroy(StringCache *cache);
 
 
@@ -237,7 +399,22 @@ void errorlist_destroy(ErrorList *list);
 
 // Dynamic buffers...
 
-typedef struct Buffer Buffer;
+typedef struct BufferBlock
+{
+    uint8 *data;
+    size_t bytes;
+    struct BufferBlock *next;
+} BufferBlock;
+typedef struct Buffer
+{
+    size_t total_bytes;
+    BufferBlock *head;
+    BufferBlock *tail;
+    size_t block_size;
+    MOJOSHADER_malloc m;
+    MOJOSHADER_free f;
+    void *d;
+} Buffer;
 Buffer *buffer_create(size_t blksz,MOJOSHADER_malloc m,MOJOSHADER_free f,void *d);
 char *buffer_reserve(Buffer *buffer, const size_t len);
 int buffer_append(Buffer *buffer, const void *_data, size_t len);
@@ -248,8 +425,8 @@ void buffer_empty(Buffer *buffer);
 char *buffer_flatten(Buffer *buffer);
 char *buffer_merge(Buffer **buffers, const size_t n, size_t *_len);
 void buffer_destroy(Buffer *buffer);
-ssize_t buffer_find(Buffer *buffer, const size_t start,
-                    const void *data, const size_t len);
+void buffer_patch(Buffer *buffer, const size_t start,
+                  const void *data, const size_t len);
 
 
 
@@ -267,6 +444,8 @@ ssize_t buffer_find(Buffer *buffer, const size_t start,
 #define FXLC_ID 0x434C5846  // 0x434C5846 == 'FXLC'
 
 // we need to reference these by explicit value occasionally...
+#define OPCODE_RCP 6
+#define OPCODE_RSQ 7
 #define OPCODE_RET 28
 #define OPCODE_IF 40
 #define OPCODE_IFC 41
@@ -286,23 +465,8 @@ ssize_t buffer_find(Buffer *buffer, const size_t start,
 #define MOJOSHADER_internal_malloc NULL
 #define MOJOSHADER_internal_free NULL
 #else
-void *MOJOSHADER_internal_malloc(int bytes, void *d);
-void MOJOSHADER_internal_free(void *ptr, void *d);
-#endif
-
-#if MOJOSHADER_FORCE_INCLUDE_CALLBACKS
-#define MOJOSHADER_internal_include_open NULL
-#define MOJOSHADER_internal_include_close NULL
-#else
-int MOJOSHADER_internal_include_open(MOJOSHADER_includeType inctype,
-                                     const char *fname, const char *parent,
-                                     const char **outdata,
-                                     unsigned int *outbytes,
-                                     MOJOSHADER_malloc m, MOJOSHADER_free f,
-                                     void *d);
-
-void MOJOSHADER_internal_include_close(const char *data, MOJOSHADER_malloc m,
-                                       MOJOSHADER_free f, void *d);
+void * MOJOSHADERCALL MOJOSHADER_internal_malloc(int bytes, void *d);
+void MOJOSHADERCALL MOJOSHADER_internal_free(void *ptr, void *d);
 #endif
 
 
@@ -436,142 +600,65 @@ extern MOJOSHADER_error MOJOSHADER_out_of_mem_error;
 extern MOJOSHADER_parseData MOJOSHADER_out_of_mem_data;
 
 
-// preprocessor stuff.
-
-typedef enum
+#if SUPPORT_PROFILE_SPIRV
+// Patching SPIR-V binaries before linking is needed to ensure locations do not
+// overlap between shader stages. Unfortunately, OpDecorate takes Literal, so we
+// can't use Result <id> from OpSpecConstant and leave this up to specialization
+// mechanism.
+// Patch table must be propagated from parsing to program linking, but since
+// MOJOSHADER_parseData is public and I'd like to avoid changing ABI and exposing
+// this, it is appended to MOJOSHADER_parseData::output using postflight buffer.
+typedef struct SpirvPatchEntry
 {
-    TOKEN_UNKNOWN = 256,  // start past ASCII character values.
+    uint32 offset;
+    int32 location;
+} SpirvPatchEntry;
 
-    // These are all C-like constructs. Tokens < 256 may be single
-    //  chars (like '+' or whatever). These are just multi-char sequences
-    //  (like "+=" or whatever).
-    TOKEN_IDENTIFIER,
-    TOKEN_INT_LITERAL,
-    TOKEN_FLOAT_LITERAL,
-    TOKEN_STRING_LITERAL,
-    TOKEN_RSHIFTASSIGN,
-    TOKEN_LSHIFTASSIGN,
-    TOKEN_ADDASSIGN,
-    TOKEN_SUBASSIGN,
-    TOKEN_MULTASSIGN,
-    TOKEN_DIVASSIGN,
-    TOKEN_MODASSIGN,
-    TOKEN_XORASSIGN,
-    TOKEN_ANDASSIGN,
-    TOKEN_ORASSIGN,
-    TOKEN_INCREMENT,
-    TOKEN_DECREMENT,
-    TOKEN_RSHIFT,
-    TOKEN_LSHIFT,
-    TOKEN_ANDAND,
-    TOKEN_OROR,
-    TOKEN_LEQ,
-    TOKEN_GEQ,
-    TOKEN_EQL,
-    TOKEN_NEQ,
-    TOKEN_HASH,
-    TOKEN_HASHHASH,
-
-    // This is returned at the end of input...no more to process.
-    TOKEN_EOI,
-
-    // This is returned for char sequences we think are bogus. You'll have
-    //  to judge for yourself. In most cases, you'll probably just fail with
-    //  bogus syntax without explicitly checking for this token.
-    TOKEN_BAD_CHARS,
-
-    // This is returned if there's an error condition (the error is returned
-    //  as a NULL-terminated string from preprocessor_nexttoken(), instead
-    //  of actual token data). You can continue getting tokens after this
-    //  is reported. It happens for things like missing #includes, etc.
-    TOKEN_PREPROCESSING_ERROR,
-
-    // These are all caught by the preprocessor. Caller won't ever see them,
-    //  except TOKEN_PP_PRAGMA.
-    //  They control the preprocessor (#includes new files, etc).
-    TOKEN_PP_INCLUDE,
-    TOKEN_PP_LINE,
-    TOKEN_PP_DEFINE,
-    TOKEN_PP_UNDEF,
-    TOKEN_PP_IF,
-    TOKEN_PP_IFDEF,
-    TOKEN_PP_IFNDEF,
-    TOKEN_PP_ELSE,
-    TOKEN_PP_ELIF,
-    TOKEN_PP_ENDIF,
-    TOKEN_PP_ERROR,  // caught, becomes TOKEN_PREPROCESSING_ERROR
-    TOKEN_PP_PRAGMA,
-    TOKEN_INCOMPLETE_COMMENT,  // caught, becomes TOKEN_PREPROCESSING_ERROR
-    TOKEN_PP_UNARY_MINUS,  // used internally, never returned.
-    TOKEN_PP_UNARY_PLUS,   // used internally, never returned.
-} Token;
-
-
-// This is opaque.
-struct Preprocessor;
-typedef struct Preprocessor Preprocessor;
-
-typedef struct Conditional
+typedef struct SpirvPatchTable
 {
-    Token type;
-    int linenum;
-    int skipping;
-    int chosen;
-    struct Conditional *next;
-} Conditional;
+    // Patches for uniforms
+    SpirvPatchEntry vpflip;
+    SpirvPatchEntry array_vec4;
+    SpirvPatchEntry array_ivec4;
+    SpirvPatchEntry array_bool;
+    SpirvPatchEntry samplers[16];
+    int32 location_count;
 
-typedef struct Define
-{
-    const char *identifier;
-    const char *definition;
-    const char *original;
-    const char **parameters;
-    int paramcount;
-    struct Define *next;
-} Define;
+    // TEXCOORD0 is patched to PointCoord if VS outputs PointSize.
+    // In `helpers`: [OpDecorate|id|Location|0xDEADBEEF] -> [OpDecorate|id|BuiltIn|PointCoord]
+    // Offset derived from attrib_offsets[TEXCOORD][0].
+    uint32 pointcoord_var_offset; // in `mainline_intro`, [OpVariable|tid|id|StorageClass], patch tid to pvec2i
+    uint32 pointcoord_load_offset; // in `mainline_top`, [OpLoad|tid|id|src_id], patch tid to vec2
+    uint32 tid_pvec2i;
+    uint32 tid_vec2;
+    uint32 tid_pvec4i;
 
-typedef struct IncludeState
-{
-    const char *filename;
-    const char *source_base;
-    const char *source;
-    const char *token;
-    unsigned int tokenlen;
-    Token tokenval;
-    int pushedback;
-    const unsigned char *lexer_marker;
-    int report_whitespace;
-    int asm_comments;
-    unsigned int orig_length;
-    unsigned int bytes_left;
-    unsigned int line;
-    Conditional *conditional_stack;
-    MOJOSHADER_includeClose close_callback;
-    struct IncludeState *next;
-} IncludeState;
+    /// Patches for TEXCOORD0 and vertex attribute types
+    uint32 tid_vec4;
+    uint32 tid_ivec4;
+    uint32 tid_uvec4;
 
-Token preprocessor_lexer(IncludeState *s);
+    // Patches for vertex attribute types
+    uint32 tid_vec4_p;
+    uint32 tid_ivec4_p;
+    uint32 tid_uvec4_p;
+    uint32 attrib_type_offsets[MOJOSHADER_USAGE_TOTAL][16];
+    struct
+    {
+        uint32 num_loads;
+        uint32 *load_types;
+        uint32 *load_opcodes;
+    } attrib_type_load_offsets[MOJOSHADER_USAGE_TOTAL][16];
 
-// This will only fail if the allocator fails, so it doesn't return any
-//  error code...NULL on failure.
-Preprocessor *preprocessor_start(const char *fname, const char *source,
-                            unsigned int sourcelen,
-                            MOJOSHADER_includeOpen open_callback,
-                            MOJOSHADER_includeClose close_callback,
-                            const MOJOSHADER_preprocessorDefine *defines,
-                            unsigned int define_count, int asm_comments,
-                            MOJOSHADER_malloc m, MOJOSHADER_free f, void *d);
+    // Patches for linking vertex output/pixel input
+    uint32 attrib_offsets[MOJOSHADER_USAGE_TOTAL][16];
+    uint32 output_offsets[16];
+} SpirvPatchTable;
 
-void preprocessor_end(Preprocessor *pp);
-int preprocessor_outofmemory(Preprocessor *pp);
-const char *preprocessor_nexttoken(Preprocessor *_ctx,
-                                   unsigned int *_len, Token *_token);
-const char *preprocessor_sourcepos(Preprocessor *pp, unsigned int *pos);
-
-
-void MOJOSHADER_print_debug_token(const char *subsystem, const char *token,
-                                  const unsigned int tokenlen,
-                                  const Token tokenval);
+void MOJOSHADER_spirv_link_attributes(const MOJOSHADER_parseData *vertex,
+                                      const MOJOSHADER_parseData *pixel,
+                                      int is_glspirv);
+#endif
 
 #endif  // _INCLUDE_MOJOSHADER_INTERNAL_H_
 
@@ -587,103 +674,108 @@ void MOJOSHADER_print_debug_token(const char *subsystem, const char *token,
 // !!! FIXME: Some of these MOJOSHADER_TYPE_ANYs need to have their scope
 // !!! FIXME:  reduced to just PIXEL or VERTEX.
 
-INSTRUCTION(NOP, "NOP", 1, NULL, MOJOSHADER_TYPE_ANY)
-INSTRUCTION(MOV, "MOV", 1, DS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION(ADD, "ADD", 1, DSS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION(SUB, "SUB", 1, DSS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION(MAD, "MAD", 1, DSSS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION(MUL, "MUL", 1, DSS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION_STATE(RCP, "RCP", 1, DS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION(RSQ, "RSQ", 1, DS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION(DP3, "DP3", 1, DSS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION_STATE(DP4, "DP4", 1, DSS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION(MIN, "MIN", 1, DSS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION(MAX, "MAX", 1, DSS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION(SLT, "SLT", 1, DSS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION(SGE, "SGE", 1, DSS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION(EXP, "EXP", 1, DS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION_STATE(LOG, "LOG", 1, DS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION(LIT, "LIT", 3, DS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION(DST, "DST", 1, DSS, MOJOSHADER_TYPE_VERTEX)
-INSTRUCTION(LRP, "LRP", 2, DSSS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION_STATE(FRC, "FRC", 1, DS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION_STATE(M4X4, "M4X4", 4, DSS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION_STATE(M4X3, "M4X3", 3, DSS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION_STATE(M3X4, "M3X4", 4, DSS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION_STATE(M3X3, "M3X3", 3, DSS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION_STATE(M3X2, "M3X2", 2, DSS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION_STATE(CALL, "CALL", 2, S, MOJOSHADER_TYPE_ANY)
-INSTRUCTION_STATE(CALLNZ, "CALLNZ", 3, SS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION_STATE(LOOP, "LOOP", 3, SS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION_STATE(RET, "RET", 1, NULL, MOJOSHADER_TYPE_ANY)
-INSTRUCTION_STATE(ENDLOOP, "ENDLOOP", 2, NULL, MOJOSHADER_TYPE_ANY)
-INSTRUCTION_STATE(LABEL, "LABEL", 0, S, MOJOSHADER_TYPE_ANY)
-INSTRUCTION_STATE(DCL, "DCL", 0, DCL, MOJOSHADER_TYPE_ANY)
-INSTRUCTION_STATE(POW, "POW", 3, DSS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION(CRS, "CRS", 2, DSS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION(SGN, "SGN", 3, DSSS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION(ABS, "ABS", 1, DS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION(NRM, "NRM", 3, DS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION_STATE(SINCOS, "SINCOS", 8, SINCOS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION_STATE(REP, "REP", 3, S, MOJOSHADER_TYPE_ANY)
-INSTRUCTION_STATE(ENDREP, "ENDREP", 2, NULL, MOJOSHADER_TYPE_ANY)
-INSTRUCTION_STATE(IF, "IF", 3, S, MOJOSHADER_TYPE_ANY)
-INSTRUCTION_STATE(IFC, "IF", 3, SS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION(ELSE, "ELSE", 1, NULL, MOJOSHADER_TYPE_ANY)  // !!! FIXME: state!
-INSTRUCTION(ENDIF, "ENDIF", 1, NULL, MOJOSHADER_TYPE_ANY) // !!! FIXME: state!
-INSTRUCTION_STATE(BREAK, "BREAK", 1, NULL, MOJOSHADER_TYPE_ANY)
-INSTRUCTION_STATE(BREAKC, "BREAK", 3, SS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION_STATE(MOVA, "MOVA", 1, DS, MOJOSHADER_TYPE_VERTEX)
-INSTRUCTION_STATE(DEFB, "DEFB", 0, DEFB, MOJOSHADER_TYPE_ANY)
-INSTRUCTION_STATE(DEFI, "DEFI", 0, DEFI, MOJOSHADER_TYPE_ANY)
-INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN)
-INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN)
-INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN)
-INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN)
-INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN)
-INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN)
-INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN)
-INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN)
-INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN)
-INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN)
-INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN)
-INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN)
-INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN)
-INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN)
-INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN)
-INSTRUCTION_STATE(TEXCRD, "TEXCRD", 1, TEXCRD, MOJOSHADER_TYPE_PIXEL)
-INSTRUCTION_STATE(TEXKILL, "TEXKILL", 2, D, MOJOSHADER_TYPE_PIXEL)
-INSTRUCTION_STATE(TEXLD, "TEXLD", 1, TEXLD, MOJOSHADER_TYPE_PIXEL)
-INSTRUCTION_STATE(TEXBEM, "TEXBEM", 1, DS, MOJOSHADER_TYPE_PIXEL)
-INSTRUCTION_STATE(TEXBEML, "TEXBEML", 2, DS, MOJOSHADER_TYPE_PIXEL)
-INSTRUCTION(TEXREG2AR, "TEXREG2AR", 1, DS, MOJOSHADER_TYPE_PIXEL)
-INSTRUCTION(TEXREG2GB, "TEXREG2GB", 1, DS, MOJOSHADER_TYPE_PIXEL)
-INSTRUCTION_STATE(TEXM3X2PAD, "TEXM3X2PAD", 1, DS, MOJOSHADER_TYPE_PIXEL)
-INSTRUCTION_STATE(TEXM3X2TEX, "TEXM3X2TEX", 1, DS, MOJOSHADER_TYPE_PIXEL)
-INSTRUCTION_STATE(TEXM3X3PAD, "TEXM3X3PAD", 1, DS, MOJOSHADER_TYPE_PIXEL)
-INSTRUCTION_STATE(TEXM3X3TEX, "TEXM3X3TEX", 1, DS, MOJOSHADER_TYPE_PIXEL)
-INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN)
-INSTRUCTION_STATE(TEXM3X3SPEC, "TEXM3X3SPEC", 1, DSS, MOJOSHADER_TYPE_PIXEL)
-INSTRUCTION_STATE(TEXM3X3VSPEC, "TEXM3X3VSPEC", 1, DS, MOJOSHADER_TYPE_PIXEL)
-INSTRUCTION(EXPP, "EXPP", 1, DS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION_STATE(LOGP, "LOGP", 1, DS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION_STATE(CND, "CND", 1, DSSS, MOJOSHADER_TYPE_PIXEL)
-INSTRUCTION_STATE(DEF, "DEF", 0, DEF, MOJOSHADER_TYPE_ANY)
-INSTRUCTION(TEXREG2RGB, "TEXREG2RGB", 1, DS, MOJOSHADER_TYPE_PIXEL)
-INSTRUCTION(TEXDP3TEX, "TEXDP3TEX", 1, DS, MOJOSHADER_TYPE_PIXEL)
-INSTRUCTION(TEXM3X2DEPTH, "TEXM3X2DEPTH", 1, DS, MOJOSHADER_TYPE_PIXEL)
-INSTRUCTION(TEXDP3, "TEXDP3", 1, DS, MOJOSHADER_TYPE_PIXEL)
-INSTRUCTION_STATE(TEXM3X3, "TEXM3X3", 1, DS, MOJOSHADER_TYPE_PIXEL)
-INSTRUCTION(TEXDEPTH, "TEXDEPTH", 1, D, MOJOSHADER_TYPE_PIXEL)
-INSTRUCTION_STATE(CMP, "CMP", 1, DSSS, MOJOSHADER_TYPE_PIXEL)
-INSTRUCTION(BEM, "BEM", 2, DSS, MOJOSHADER_TYPE_PIXEL)
-INSTRUCTION_STATE(DP2ADD, "DP2ADD", 2, DSSS, MOJOSHADER_TYPE_PIXEL)
-INSTRUCTION(DSX, "DSX", 2, DS, MOJOSHADER_TYPE_PIXEL)
-INSTRUCTION(DSY, "DSY", 2, DS, MOJOSHADER_TYPE_PIXEL)
-INSTRUCTION(TEXLDD, "TEXLDD", 3, DSSSS, MOJOSHADER_TYPE_PIXEL)
-INSTRUCTION_STATE(SETP, "SETP", 1, DSS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION_STATE(TEXLDL, "TEXLDL", 2, DSS, MOJOSHADER_TYPE_ANY)
-INSTRUCTION_STATE(BREAKP, "BREAKP", 3, S, MOJOSHADER_TYPE_ANY)
+INSTRUCTION(NOP, "NOP", 1, NULL, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION(MOV, "MOV", 1, DS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION(ADD, "ADD", 1, DSS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION(SUB, "SUB", 1, DSS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION(MAD, "MAD", 1, DSSS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION(MUL, "MUL", 1, DSS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION_STATE(RCP, "RCP", 1, DS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION_STATE(RSQ, "RSQ", 1, DS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION(DP3, "DP3", 1, DSS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION_STATE(DP4, "DP4", 1, DSS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION(MIN, "MIN", 1, DSS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION(MAX, "MAX", 1, DSS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION(SLT, "SLT", 1, DSS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION(SGE, "SGE", 1, DSS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION(EXP, "EXP", 1, DS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION_STATE(LOG, "LOG", 1, DS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION(LIT, "LIT", 3, DS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION(DST, "DST", 1, DSS, MOJOSHADER_TYPE_VERTEX, 0xF)
+INSTRUCTION(LRP, "LRP", 2, DSSS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION_STATE(FRC, "FRC", 1, DS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION_STATE(M4X4, "M4X4", 4, DSS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION_STATE(M4X3, "M4X3", 3, DSS, MOJOSHADER_TYPE_ANY, 0x7)
+INSTRUCTION_STATE(M3X4, "M3X4", 4, DSS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION_STATE(M3X3, "M3X3", 3, DSS, MOJOSHADER_TYPE_ANY, 0x7)
+INSTRUCTION_STATE(M3X2, "M3X2", 2, DSS, MOJOSHADER_TYPE_ANY, 0x3)
+INSTRUCTION_STATE(CALL, "CALL", 2, S, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION_STATE(CALLNZ, "CALLNZ", 3, SS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION_STATE(LOOP, "LOOP", 3, SS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION_STATE(RET, "RET", 1, NULL, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION_STATE(ENDLOOP, "ENDLOOP", 2, NULL, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION_STATE(LABEL, "LABEL", 0, S, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION_STATE(DCL, "DCL", 0, DCL, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION_STATE(POW, "POW", 3, DSS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION(CRS, "CRS", 2, DSS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION(SGN, "SGN", 3, DSSS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION(ABS, "ABS", 1, DS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION(NRM, "NRM", 3, DS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION_STATE(SINCOS, "SINCOS", 8, SINCOS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION_STATE(REP, "REP", 3, S, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION_STATE(ENDREP, "ENDREP", 2, NULL, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION_STATE(IF, "IF", 3, S, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION_STATE(IFC, "IF", 3, SS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION(ELSE, "ELSE", 1, NULL, MOJOSHADER_TYPE_ANY, 0xF)  // !!! FIXME: state!
+INSTRUCTION(ENDIF, "ENDIF", 1, NULL, MOJOSHADER_TYPE_ANY, 0xF) // !!! FIXME: state!
+INSTRUCTION_STATE(BREAK, "BREAK", 1, NULL, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION_STATE(BREAKC, "BREAK", 3, SS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION_STATE(MOVA, "MOVA", 1, DS, MOJOSHADER_TYPE_VERTEX, 0xF)
+INSTRUCTION_STATE(DEFB, "DEFB", 0, DEFB, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION_STATE(DEFI, "DEFI", 0, DEFI, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN, 0xF)
+INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN, 0xF)
+INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN, 0xF)
+INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN, 0xF)
+INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN, 0xF)
+INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN, 0xF)
+INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN, 0xF)
+INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN, 0xF)
+INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN, 0xF)
+INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN, 0xF)
+INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN, 0xF)
+INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN, 0xF)
+INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN, 0xF)
+INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN, 0xF)
+INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN, 0xF)
+INSTRUCTION_STATE(TEXCRD, "TEXCRD", 1, TEXCRD, MOJOSHADER_TYPE_PIXEL, 0xF)
+INSTRUCTION_STATE(TEXKILL, "TEXKILL", 2, D, MOJOSHADER_TYPE_PIXEL, 0xF)
+INSTRUCTION_STATE(TEXLD, "TEXLD", 1, TEXLD, MOJOSHADER_TYPE_PIXEL, 0xF)
+INSTRUCTION_STATE(TEXBEM, "TEXBEM", 1, DS, MOJOSHADER_TYPE_PIXEL, 0xF)
+INSTRUCTION_STATE(TEXBEML, "TEXBEML", 2, DS, MOJOSHADER_TYPE_PIXEL, 0xF)
+INSTRUCTION(TEXREG2AR, "TEXREG2AR", 1, DS, MOJOSHADER_TYPE_PIXEL, 0xF)
+INSTRUCTION(TEXREG2GB, "TEXREG2GB", 1, DS, MOJOSHADER_TYPE_PIXEL, 0xF)
+INSTRUCTION_STATE(TEXM3X2PAD, "TEXM3X2PAD", 1, DS, MOJOSHADER_TYPE_PIXEL, 0xF)
+INSTRUCTION_STATE(TEXM3X2TEX, "TEXM3X2TEX", 1, DS, MOJOSHADER_TYPE_PIXEL, 0xF)
+INSTRUCTION_STATE(TEXM3X3PAD, "TEXM3X3PAD", 1, DS, MOJOSHADER_TYPE_PIXEL, 0xF)
+INSTRUCTION_STATE(TEXM3X3TEX, "TEXM3X3TEX", 1, DS, MOJOSHADER_TYPE_PIXEL, 0xF)
+INSTRUCTION(RESERVED, 0, 0, NULL, MOJOSHADER_TYPE_UNKNOWN, 0xF)
+INSTRUCTION_STATE(TEXM3X3SPEC, "TEXM3X3SPEC", 1, DSS, MOJOSHADER_TYPE_PIXEL, 0xF)
+INSTRUCTION_STATE(TEXM3X3VSPEC, "TEXM3X3VSPEC", 1, DS, MOJOSHADER_TYPE_PIXEL, 0xF)
+INSTRUCTION(EXPP, "EXPP", 1, DS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION_STATE(LOGP, "LOGP", 1, DS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION_STATE(CND, "CND", 1, DSSS, MOJOSHADER_TYPE_PIXEL, 0xF)
+INSTRUCTION_STATE(DEF, "DEF", 0, DEF, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION(TEXREG2RGB, "TEXREG2RGB", 1, DS, MOJOSHADER_TYPE_PIXEL, 0xF)
+INSTRUCTION(TEXDP3TEX, "TEXDP3TEX", 1, DS, MOJOSHADER_TYPE_PIXEL, 0xF)
+INSTRUCTION(TEXM3X2DEPTH, "TEXM3X2DEPTH", 1, DS, MOJOSHADER_TYPE_PIXEL, 0xF)
+INSTRUCTION(TEXDP3, "TEXDP3", 1, DS, MOJOSHADER_TYPE_PIXEL, 0xF)
+INSTRUCTION_STATE(TEXM3X3, "TEXM3X3", 1, DS, MOJOSHADER_TYPE_PIXEL, 0xF)
+INSTRUCTION(TEXDEPTH, "TEXDEPTH", 1, D, MOJOSHADER_TYPE_PIXEL, 0xF)
+INSTRUCTION_STATE(CMP, "CMP", 1, DSSS, MOJOSHADER_TYPE_PIXEL, 0xF)
+INSTRUCTION(BEM, "BEM", 2, DSS, MOJOSHADER_TYPE_PIXEL, 0xF)
+INSTRUCTION_STATE(DP2ADD, "DP2ADD", 2, DSSS, MOJOSHADER_TYPE_PIXEL, 0xF)
+INSTRUCTION(DSX, "DSX", 2, DS, MOJOSHADER_TYPE_PIXEL, 0xF)
+INSTRUCTION(DSY, "DSY", 2, DS, MOJOSHADER_TYPE_PIXEL, 0xF)
+INSTRUCTION(TEXLDD, "TEXLDD", 3, DSSSS, MOJOSHADER_TYPE_PIXEL, 0xF)
+INSTRUCTION_STATE(SETP, "SETP", 1, DSS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION_STATE(TEXLDL, "TEXLDL", 2, DSS, MOJOSHADER_TYPE_ANY, 0xF)
+INSTRUCTION_STATE(BREAKP, "BREAKP", 3, S, MOJOSHADER_TYPE_ANY, 0xF)
+
+#undef MOJOSHADER_DO_INSTRUCTION_TABLE
+#undef INSTRUCTION
+#undef INSTRUCTION_STATE
+
 #endif
 
 // end of mojoshader_internal.h ...

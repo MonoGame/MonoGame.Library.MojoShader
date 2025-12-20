@@ -1,5 +1,33 @@
 #define __MOJOSHADER_INTERNAL__ 1
 #include "mojoshader_internal.h"
+#ifndef MOJOSHADER_USE_SDL_STDLIB
+#include <math.h>
+#endif /* MOJOSHADER_USE_SDL_STDLIB */
+
+// Convenience functions for allocators...
+#if !MOJOSHADER_FORCE_ALLOCATOR
+static char zeromalloc = 0;
+void * MOJOSHADERCALL MOJOSHADER_internal_malloc(int bytes, void *d)
+{
+    return (bytes == 0) ? &zeromalloc : malloc(bytes);
+} // MOJOSHADER_internal_malloc
+void MOJOSHADERCALL MOJOSHADER_internal_free(void *ptr, void *d)
+{
+    if ((ptr != &zeromalloc) && (ptr != NULL))
+        free(ptr);
+} // MOJOSHADER_internal_free
+#endif
+
+MOJOSHADER_error MOJOSHADER_out_of_mem_error = {
+    "Out of memory", NULL, MOJOSHADER_POSITION_NONE
+};
+
+MOJOSHADER_parseData MOJOSHADER_out_of_mem_data = {
+    1, &MOJOSHADER_out_of_mem_error, 0, 0, 0, 0,
+    MOJOSHADER_TYPE_UNKNOWN, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+};
+
 
 typedef struct HashItem
 {
@@ -62,7 +90,7 @@ int hash_find(const HashTable *table, const void *key, const void **_value)
 int hash_iter(const HashTable *table, const void *key,
               const void **_value, void **iter)
 {
-    HashItem *item = (HashItem*)*iter;
+    HashItem *item = (HashItem *) *iter;
     if (item == NULL)
         item = table->table[calc_hash(table, key)];
     else
@@ -87,8 +115,8 @@ int hash_iter(const HashTable *table, const void *key,
 
 int hash_iter_keys(const HashTable *table, const void **_key, void **iter)
 {
-    HashItem *item = (HashItem*)*iter;
-    int idx = 0;
+    HashItem *item = (HashItem *) *iter;
+    uint32 idx = 0;
 
     if (item != NULL)
     {
@@ -166,7 +194,7 @@ HashTable *hash_create(void *data, const HashTable_HashFn hashfn,
     return table;
 } // hash_create
 
-void hash_destroy(HashTable *table)
+void hash_destroy(HashTable *table, const void *ctx)
 {
     uint32 i;
     void *data = table->data;
@@ -178,7 +206,7 @@ void hash_destroy(HashTable *table)
         while (item != NULL)
         {
             HashItem *next = item->next;
-            table->nuke(item->key, item->value, data);
+            table->nuke(ctx, item->key, item->value, data);
             f(item, d);
             item = next;
         } // while
@@ -188,7 +216,7 @@ void hash_destroy(HashTable *table)
     f(table, d);
 } // hash_destroy
 
-int hash_remove(HashTable *table, const void *key)
+int hash_remove(HashTable *table, const void *key, const void *ctx)
 {
     HashItem *item = NULL;
     HashItem *prev = NULL;
@@ -203,7 +231,7 @@ int hash_remove(HashTable *table, const void *key)
             else
                 table->table[hash] = item->next;
 
-            table->nuke(item->key, item->value, data);
+            table->nuke(ctx, item->key, item->value, data);
             table->f(item, table->d);
             return 1;
         } // if
@@ -244,9 +272,9 @@ int hash_keymatch_string(const void *a, const void *b, void *data)
 
 // string -> string map...
 
-static void stringmap_nuke_noop(const void *key, const void *val, void *d) {}
+static void stringmap_nuke_noop(const void *ctx, const void *key, const void *val, void *d) {}
 
-static void stringmap_nuke(const void *key, const void *val, void *d)
+static void stringmap_nuke(const void *ctx, const void *key, const void *val, void *d)
 {
     StringMap *smap = (StringMap *) d;
     smap->f((void *) key, smap->d);
@@ -266,7 +294,7 @@ StringMap *stringmap_create(const int copy, MOJOSHADER_malloc m,
 
 void stringmap_destroy(StringMap *smap)
 {
-    hash_destroy(smap);
+    hash_destroy(smap, NULL);
 } // stringmap_destroy
 
 int stringmap_insert(StringMap *smap, const char *key, const char *value)
@@ -299,7 +327,7 @@ int stringmap_insert(StringMap *smap, const char *key, const char *value)
 
 int stringmap_remove(StringMap *smap, const char *key)
 {
-    return hash_remove(smap, key);
+    return hash_remove(smap, key, NULL);
 } // stringmap_remove
 
 int stringmap_find(const StringMap *smap, const char *key, const char **_value)
@@ -328,13 +356,16 @@ struct StringCache
     void *d;
 };
 
+
 const char *stringcache(StringCache *cache, const char *str)
 {
     return stringcache_len(cache, str, strlen(str));
 } // stringcache
 
-const char *stringcache_len(StringCache *cache, const char *str,
-                             const unsigned int len)
+static const char *stringcache_len_internal(StringCache *cache,
+                                            const char *str,
+                                            const unsigned int len,
+                                            const int addmissing)
 {
     const uint8 hash = hash_string(str, len) & (cache->table_size-1);
     StringBucket *bucket = cache->hashtable[hash];
@@ -358,22 +389,32 @@ const char *stringcache_len(StringCache *cache, const char *str,
         bucket = bucket->next;
     } // while
 
-    // no match, add to the table.
-    bucket = (StringBucket *) cache->m(sizeof (StringBucket), cache->d);
+    // no match!
+    if (!addmissing)
+        return NULL;
+
+    // add to the table.
+    bucket = (StringBucket *) cache->m(sizeof (StringBucket) + len + 1, cache->d);
     if (bucket == NULL)
         return NULL;
-    bucket->string = (char *) cache->m(len + 1, cache->d);
-    if (bucket->string == NULL)
-    {
-        cache->f(bucket, cache->d);
-        return NULL;
-    } // if
+    bucket->string = (char *)(bucket + 1);
     memcpy(bucket->string, str, len);
     bucket->string[len] = '\0';
     bucket->next = cache->hashtable[hash];
     cache->hashtable[hash] = bucket;
     return bucket->string;
+} // stringcache_len_internal
+
+const char *stringcache_len(StringCache *cache, const char *str,
+                            const unsigned int len)
+{
+    return stringcache_len_internal(cache, str, len, 1);
 } // stringcache_len
+
+int stringcache_iscached(StringCache *cache, const char *str)
+{
+    return (stringcache_len_internal(cache, str, strlen(str), 0) != NULL);
+} // stringcache_iscached
 
 const char *stringcache_fmt(StringCache *cache, const char *fmt, ...)
 {
@@ -444,7 +485,6 @@ void stringcache_destroy(StringCache *cache)
         while (bucket)
         {
             StringBucket *next = bucket->next;
-            f(bucket->string, d);
             f(bucket, d);
             bucket = next;
         } // while
@@ -529,8 +569,23 @@ int errorlist_add_va(ErrorList *list, const char *_fname,
     char scratch[128];
     va_list ap;
     va_copy(ap, va);
-    const int len = vsnprintf(scratch, sizeof (scratch), fmt, ap);
+    int len = vsnprintf(scratch, sizeof (scratch), fmt, ap);
     va_end(ap);
+
+    // on some versions of the windows C runtime, vsnprintf() returns -1
+    // if the buffer overflows instead of the length the string would have
+    // been as expected.
+    // In this case we make another copy of va and fetch the length only
+    // with another call to _vscprintf
+
+#if defined(_WIN32) && !defined(MOJOSHADER_USE_SDL_STDLIB)
+    if (len == -1)
+    {
+        va_copy(ap, va);
+        len = _vscprintf(fmt, ap);
+        va_end(ap);
+    }
+#endif
 
     char *failstr = (char *) list->m(len + 1, list->d);
     if (failstr == NULL)
@@ -551,8 +606,6 @@ int errorlist_add_va(ErrorList *list, const char *_fname,
         vsnprintf(failstr, len + 1, fmt, ap);  // rebuild it.
         va_end(ap);
     } // else
-
-    printf("fail - %s\n", failstr);
 
     error->error.error = failstr;
     error->error.filename = fname;
@@ -622,24 +675,6 @@ void errorlist_destroy(ErrorList *list)
     f(list, d);
 } // errorlist_destroy
 
-
-typedef struct BufferBlock
-{
-    uint8 *data;
-    size_t bytes;
-    struct BufferBlock *next;
-} BufferBlock;
-
-struct Buffer
-{
-    size_t total_bytes;
-    BufferBlock *head;
-    BufferBlock *tail;
-    size_t block_size;
-    MOJOSHADER_malloc m;
-    MOJOSHADER_free f;
-    void *d;
-};
 
 Buffer *buffer_create(size_t blksz, MOJOSHADER_malloc m,
                       MOJOSHADER_free f, void *d)
@@ -729,7 +764,7 @@ int buffer_append(Buffer *buffer, const void *_data, size_t len)
 
     if (len > 0)
     {
-        assert((!buffer->tail) || (buffer->tail->bytes == blocksize));
+        assert((!buffer->tail) || (buffer->tail->bytes >= blocksize));
         const size_t bytecount = len > blocksize ? len : blocksize;
         const size_t malloc_len = sizeof (BufferBlock) + bytecount;
         BufferBlock *item = (BufferBlock *) buffer->m(malloc_len, buffer->d);
@@ -783,7 +818,7 @@ int buffer_append_va(Buffer *buffer, const char *fmt, va_list va)
     va_copy(ap, va);
     vsnprintf(buf, len + 1, fmt, ap);  // rebuild it.
     va_end(ap);
-    const int retval = buffer_append(buffer, scratch, len);
+    const int retval = buffer_append(buffer, buf, len);
     buffer->f(buf, buffer->d);
     return retval;
 } // buffer_append_va
@@ -891,44 +926,17 @@ void buffer_destroy(Buffer *buffer)
     } // if
 } // buffer_destroy
 
-static int blockscmp(BufferBlock *item, const uint8 *data, size_t len)
+void buffer_patch(Buffer *buffer, const size_t start,
+                  const void *_data, const size_t len)
 {
     if (len == 0)
-        return 1;  // "match"
+        return;  // Nothing to do.
 
-    while (item != NULL)
-    {
-        const size_t itemremain = item->bytes;
-        const size_t avail = len < itemremain ? len : itemremain;
-        if (memcmp(item->data, data, avail) != 0)
-            return 0;  // not a match.
-
-        if (len == avail)
-            return 1;   // complete match!
-
-        len -= avail;
-        data += avail;
-        item = item->next;
-    } // while
-
-    return 0;  // not a complete match.
-} // blockscmp
-
-ssize_t buffer_find(Buffer *buffer, const size_t start,
-                    const void *_data, const size_t len)
-{
-    if (len == 0)
-        return 0;  // I guess that's right.
-
-    if (start >= buffer->total_bytes)
-        return -1;  // definitely can't match.
-
-    if (len > (buffer->total_bytes - start))
-        return -1;  // definitely can't match.
+    if ((start + len) > buffer->total_bytes)
+        return;  // definitely can't patch.
 
     // Find the start point somewhere in the center of a buffer.
     BufferBlock *item = buffer->head;
-    const uint8 *ptr = item->data;
     size_t pos = 0;
     if (start > 0)
     {
@@ -936,54 +944,223 @@ ssize_t buffer_find(Buffer *buffer, const size_t start,
         {
             assert(item != NULL);
             if ((pos + item->bytes) > start)  // start is in this block.
-            {
-                ptr = item->data + (start - pos);
                 break;
-            } // if
 
             pos += item->bytes;
             item = item->next;
         } // while
     } // if
 
-    // okay, we're at the origin of the search.
-    assert(item != NULL);
-    assert(ptr != NULL);
-
     const uint8 *data = (const uint8 *) _data;
-    const uint8 first = *data;
-    while (item != NULL)
+    size_t write_pos = start - pos;
+    size_t write_remain = len;
+    size_t written = 0;
+    while (write_remain)
     {
-        const size_t itemremain = item->bytes - ((size_t)(ptr-item->data));
-        ptr = (uint8 *) memchr(ptr, first, itemremain);
-        while (ptr != NULL)
-        {
-            const size_t retval = pos + ((size_t) (ptr - item->data));
-            if (len == 1)
-                return retval;  // we're done, here it is!
+        size_t write_end = write_pos + write_remain;
+        if (write_end > item->bytes)
+            write_end = item->bytes;
 
-            const size_t itemremain = item->bytes - ((size_t)(ptr-item->data));
-            const size_t avail = len < itemremain ? len : itemremain;
-            if ((avail == 0) || (memcmp(ptr, data, avail) == 0))
+        size_t to_write = write_end - write_pos;
+        memcpy(item->data + write_pos, data + written, to_write);
+        write_remain -= to_write;
+        written      += to_write;
+        write_pos     = 0;
+        item          = item->next;
+    } // while
+} // buffer_patch
+
+// Based on SDL_string.c's SDL_PrintFloat function
+size_t MOJOSHADER_printFloat(char *text, size_t maxlen, float arg)
+{
+    size_t len;
+    size_t left = maxlen;
+    char *textstart = text;
+
+    int precision = 9;
+
+    if (isnan(arg))
+    {
+        if (left > 3)
+        {
+            snprintf(text, left, "NaN");
+            left -= 3;
+        } // if
+        text += 3;
+    } // if
+    else if (isinf(arg))
+    {
+        if (left > 3)
+        {
+            snprintf(text, left, "inf");
+            left -= 3;
+        } // if
+        text += 3;
+    } // else if
+    else if (arg)
+    {
+        /* This isn't especially accurate, but hey, it's easy. :) */
+        unsigned long value;
+
+        if (arg < 0)
+        {
+            if (left > 1)
             {
-                // okay, we've got a (sub)string match! Move to the next block.
-                // check all blocks until we get a complete match or a failure.
-                if (blockscmp(item->next, data+avail, len-avail))
-                    return (ssize_t) retval;
+                *text = '-';
+                --left;
+            } // if
+            ++text;
+            arg = -arg;
+        } // if
+        value = (unsigned long) arg;
+        len = snprintf(text, left, "%lu", value);
+        text += len;
+        if (len >= left)
+            left = (left < 1) ? left : 1;
+        else
+            left -= len;
+        arg -= value;
+
+        int mult = 10;
+        if (left > 1)
+        {
+            *text = '.';
+            --left;
+        } // if
+        ++text;
+        while (precision-- > 0)
+        {
+            value = (unsigned long) (arg * mult);
+            len = snprintf(text, left, "%lu", value);
+            text += len;
+            if (len >= left)
+                left = (left < 1) ? left : 1;
+            else
+                left -= len;
+            arg -= (double) value / mult;
+            if (arg < 0) arg = -arg; // Sometimes that bit gets flipped...
+            mult *= 10;
+        } // while
+    } // if
+    else
+    {
+        if (left > 3)
+        {
+            snprintf(text, left, "0.0");
+            left -= 3;
+        } // if
+        text += 3;
+    } // else
+
+    return (text - textstart);
+} // MOJOSHADER_printFloat
+
+#if SUPPORT_PROFILE_SPIRV
+#include "spirv/spirv.h"
+#include "spirv/GLSL.std.450.h"
+void MOJOSHADER_spirv_link_attributes(const MOJOSHADER_parseData *vertex,
+                                      const MOJOSHADER_parseData *pixel,
+                                      int is_glspirv)
+{
+    int i;
+    uint32 attr_loc = 0;
+    uint32 vOffset, pOffset;
+    int vDataLen = vertex->output_len - sizeof(SpirvPatchTable);
+    int pDataLen = pixel->output_len - sizeof(SpirvPatchTable);
+    SpirvPatchTable *vTable = (SpirvPatchTable *) &vertex->output[vDataLen];
+    SpirvPatchTable *pTable = (SpirvPatchTable *) &pixel->output[pDataLen];
+    const uint32 texcoord0Loc = pTable->attrib_offsets[MOJOSHADER_USAGE_TEXCOORD][0];
+
+    if (is_glspirv)
+    {
+        // We need locations for color outputs first!
+        for (i = 0; i < pixel->output_count; i++)
+        {
+            const MOJOSHADER_attribute* pAttr = &pixel->outputs[i];
+            if (pAttr->usage != MOJOSHADER_USAGE_COLOR)
+            {
+                // This should be FragDepth, which is builtin
+                assert(pAttr->usage == MOJOSHADER_USAGE_DEPTH);
+                continue;
             } // if
 
-            // try again, further in this block.
-            ptr = (uint8 *) memchr(ptr + 1, first, itemremain - 1);
-        } // while
+            // Set the loc for the output declaration...
+            pOffset = pTable->output_offsets[pAttr->index];
+            assert(pOffset > 0);
+            ((uint32*)pixel->output)[pOffset] = attr_loc;
 
-        pos += item->bytes;
-        item = item->next;
-        if (item != NULL)
-            ptr = item->data;
-    } // while
+            // Set the same value for the vertex output/pixel input...
+            pOffset = pTable->attrib_offsets[pAttr->usage][pAttr->index];
+            if (pOffset)
+                ((uint32*)pixel->output)[pOffset] = attr_loc;
+            vOffset = vTable->attrib_offsets[pAttr->usage][pAttr->index];
+            if (vOffset)
+                ((uint32*)vertex->output)[vOffset] = attr_loc;
 
-    return -1;  // no match found.
-} // buffer_find
+            // ... increment location index, finally.
+            attr_loc++;
+        } // for
+    }
+
+    // Okay, now we can start linking pixel/vertex attributes
+    for (i = 0; i < pixel->attribute_count; i++)
+    {
+        const MOJOSHADER_attribute *pAttr = &pixel->attributes[i];
+        if (pAttr->usage == MOJOSHADER_USAGE_UNKNOWN)
+            continue; // Probably something like VPOS, ignore!
+        if (pAttr->usage == MOJOSHADER_USAGE_DEPTH)
+            continue; // This should be FragDepth, which is builtin
+        if (is_glspirv && pAttr->usage == MOJOSHADER_USAGE_COLOR && pTable->output_offsets[pAttr->index])
+            continue;
+
+        // The input may not exist in the output list!
+        pOffset = pTable->attrib_offsets[pAttr->usage][pAttr->index];
+        vOffset = vTable->attrib_offsets[pAttr->usage][pAttr->index];
+        ((uint32 *) pixel->output)[pOffset] = attr_loc;
+        if (vOffset)
+            ((uint32 *) vertex->output)[vOffset] = attr_loc;
+        attr_loc++;
+    } // for
+
+    // There may be outputs not present in the input list!
+    for (i = 0; i < vertex->output_count; i++)
+    {
+        const MOJOSHADER_attribute *vAttr = &vertex->outputs[i];
+        assert(vAttr->usage != MOJOSHADER_USAGE_UNKNOWN);
+        if (vAttr->usage == MOJOSHADER_USAGE_POSITION && vAttr->index == 0)
+            continue;
+        if (vAttr->usage == MOJOSHADER_USAGE_POINTSIZE && vAttr->index == 0)
+            continue;
+        if (is_glspirv && vAttr->usage == MOJOSHADER_USAGE_COLOR && pTable->output_offsets[vAttr->index])
+            continue;
+
+        if (!pTable->attrib_offsets[vAttr->usage][vAttr->index])
+        {
+            vOffset = vTable->attrib_offsets[vAttr->usage][vAttr->index];
+            ((uint32 *) vertex->output)[vOffset] = attr_loc++;
+        } // if
+    } // for
+
+    // gl_PointCoord support
+    if (texcoord0Loc)
+    {
+        if (vTable->attrib_offsets[MOJOSHADER_USAGE_POINTSIZE][0] > 0)
+        {
+            ((uint32 *) pixel->output)[pTable->pointcoord_var_offset + 1] = pTable->tid_pvec2i;
+            ((uint32 *) pixel->output)[pTable->pointcoord_load_offset + 1] = pTable->tid_vec2;
+            ((uint32 *) pixel->output)[texcoord0Loc - 1] = SpvDecorationBuiltIn;
+            ((uint32 *) pixel->output)[texcoord0Loc] = SpvBuiltInPointCoord;
+        } // if
+        else
+        {
+            ((uint32 *) pixel->output)[pTable->pointcoord_var_offset + 1] = pTable->tid_pvec4i;
+            ((uint32 *) pixel->output)[pTable->pointcoord_load_offset + 1] = pTable->tid_vec4;
+            ((uint32 *) pixel->output)[texcoord0Loc - 1] = SpvDecorationLocation;
+            // texcoord0Loc should already have attr_loc from the above work!
+        } // else
+    } // if
+} // MOJOSHADER_spirv_link_attributes
+#endif
 
 // end of mojoshader_common.c ...
 
