@@ -14,22 +14,27 @@ jobs:
     steps:
       - name: Expose GitHub Runtime
         uses: crazy-max/ghaction-github-runtime@v3
+
       - name: Add msbuild to PATH
         if: runner.os == 'Windows'
         uses: microsoft/setup-msbuild@v1.0.2
+
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get install build-essential git make cmake autoconf automake pkg-config
         shell: bash
+
       - name: Clone repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
+
       - name: Run CAKE
         run: dotnet run --project ./build/Build.csproj -- --universalBinary=true
         env:
           ACTIONS_RUNTIME_TOKEN: ${{ env.ACTIONS_RUNTIME_TOKEN }}
           ACTIONS_RUNTIME_URL: "${{ env.ACTIONS_RUNTIME_URL }}"
+
   deploy:
     name: deploy
     runs-on: ubuntu-latest
@@ -41,17 +46,21 @@ jobs:
     steps:
       - name: Expose GitHub Runtime
         uses: crazy-max/ghaction-github-runtime@v3
+
       - name: Clone repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
+
       - name: Run CAKE
         run: dotnet run --project ./build/Build.csproj -- --target=Package --universalBinary=true --libraryname=MojoShader --licensepath=mojoshader/LICENSE.txt
         env:
           ACTIONS_RUNTIME_TOKEN: ${{ env.ACTIONS_RUNTIME_TOKEN }}
           ACTIONS_RUNTIME_URL: "${{ env.ACTIONS_RUNTIME_URL }}"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Make a release
+        if: github.ref_type == 'tag'
         uses: ncipollo/release-action@v1
         with:
           name: 'MonoGame.Library.MojoShader ${{ github.ref_name }}'
@@ -60,5 +69,8 @@ jobs:
           removeArtifacts: true
           artifacts: "bin/Release/*.nupkg"
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push package to nuget
         if: github.ref_type == 'tag'
+        run: dotnet nuget push bin/Release/*.nupkg --api-key ${{ secrets.NUGET_DEPLOY_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
 
