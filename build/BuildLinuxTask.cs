@@ -13,7 +13,7 @@ public sealed class BuildLinuxTask : FrostingTask<BuildContext>
     {
         var buildWorkingDir = "mojoshaderbuild/";
         context.CreateDirectory(buildWorkingDir);
-        context.StartProcess("cmake", new ProcessSettings { WorkingDirectory = buildWorkingDir, Arguments = "../mojoshader/CMakeLists.txt -DBUILD_SHARED_LIBS=ON -DDEPTH_CLIPPING=ON" });
+        context.StartProcess("cmake", new ProcessSettings { WorkingDirectory = buildWorkingDir, Arguments = "../mojoshader/CMakeLists.txt -DBUILD_SHARED_LIBS=ON -DDEPTH_CLIPPING=ON -DPROFILE_GLSLES3=ON" });
         context.StartProcess("cmake", new ProcessSettings { WorkingDirectory = buildWorkingDir, Arguments = "--build . --config release" });
         context.CopyFile(System.IO.Path.Combine(buildWorkingDir, "libmojoshader.so"), $"{context.ArtifactsDir}/libmojoshader.so");
     }
