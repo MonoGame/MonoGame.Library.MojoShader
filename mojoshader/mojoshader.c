@@ -6626,8 +6626,9 @@ static int parse_source_token(Context *ctx, SourceArgInfo *info)
         case SRCMOD_NOT:  // !!! FIXME: I _think_ this is right...
             if (shader_version_atleast(ctx, 2, 0))
             {
-                if (info->regtype != REG_TYPE_PREDICATE)
-                    fail(ctx, "NOT only allowed on predicate register.");
+                if (info->regtype != REG_TYPE_PREDICATE
+                 && info->regtype != REG_TYPE_CONSTBOOL)
+                    fail(ctx, "NOT only allowed on bool registers.");
             } // if
             break;
 
@@ -8248,6 +8249,13 @@ static void parse_preshader(Context *ctx, uint32 tokcount)
         if ( (!is_comment_token(ctx, *tokens, &subtokcount)) ||
              (subtokcount > tokcount) )
         {
+            // !!! FIXME: Standalone preshaders have this EOS-looking token,
+            // !!! FIXME:  sometimes followed by tokens that don't appear to
+            // !!! FIXME:  have anything to do with the rest of the blob.
+            // !!! FIXME: So for now, treat this as a special "EOS" comment.
+            if (SWAP32(*tokens) == 0xFFFF)
+                break;
+
             fail(ctx, "Bogus preshader data.");
             return;
         } // if
