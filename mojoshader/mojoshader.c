@@ -7509,8 +7509,6 @@ static void state_IF(Context *ctx)
     const RegisterType regtype = ctx->source_args[0].regtype;
     if ((regtype != REG_TYPE_PREDICATE) && (regtype != REG_TYPE_CONSTBOOL))
         fail(ctx, "IF src0 must be CONSTBOOL or PREDICATE");
-    else if (!replicate_swizzle(ctx->source_args[0].swizzle))
-        fail(ctx, "IF src0 must have replicate swizzle");
     // !!! FIXME: track if nesting depth.
 } // state_IF
 
