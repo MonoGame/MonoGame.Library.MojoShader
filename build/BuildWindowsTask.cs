@@ -11,9 +11,15 @@ public sealed class BuildWindowsTask : FrostingTask<BuildContext>
 
     public override void Run(BuildContext context)
     {
-        var buildWorkingDir = "mojoshaderbuild/";
+        BuildForArchitecture(context, "x64", "x64");
+        BuildForArchitecture(context, "ARM64", "arm64");
+    }
+
+    private void BuildForArchitecture(BuildContext context, string arch, string rid)
+    {
+        var buildWorkingDir = $"mojoshaderbuild-{rid}/";
         context.CreateDirectory(buildWorkingDir);
-        context.StartProcess("cmake", new ProcessSettings { WorkingDirectory = buildWorkingDir, Arguments = "../mojoshader/CMakeLists.txt" });
+        context.StartProcess("cmake", new ProcessSettings { WorkingDirectory = buildWorkingDir, Arguments = $"-A {arch} ../mojoshader/CMakeLists.txt" });
 
         // Fix generated projects using the same obj folder
         var dirProps = @"
@@ -29,6 +35,9 @@ public sealed class BuildWindowsTask : FrostingTask<BuildContext>
         context.ReplaceTextInFiles(System.IO.Path.Combine(buildWorkingDir, "mojoshader.vcxproj"), "MultiThreadedDLL", "MultiThreaded");
 
         context.StartProcess("cmake", new ProcessSettings { WorkingDirectory = buildWorkingDir, Arguments = "--build . --config release" });
-        context.CopyFile(System.IO.Path.Combine(buildWorkingDir, "Release", "mojoshader.dll"), $"{context.ArtifactsDir}/mojoshader.dll");
+        
+        var outputDir = $"{context.ArtifactsDir}/win-{rid}";
+        context.CreateDirectory(outputDir);
+        context.CopyFile(System.IO.Path.Combine(buildWorkingDir, "Release", "mojoshader.dll"), $"{outputDir}/mojoshader.dll");
     }
 }
