@@ -13,8 +13,8 @@ public sealed class BuildLinuxTask : FrostingTask<BuildContext>
     {
         var buildWorkingDir = "mojoshaderbuild/";
         context.CreateDirectory(buildWorkingDir);
-        context.StartProcess("cmake", new ProcessSettings { WorkingDirectory = buildWorkingDir, Arguments = "../mojoshader/CMakeLists.txt -DCMAKE_OSX_ARCHITECTURES=\"x86_64;arm64\"" });
-        context.StartProcess("cmake", new ProcessSettings { WorkingDirectory = buildWorkingDir, Arguments = "--build . --config release" });
+        context.StartProcessWithDocker("cmake", workingDirectory: buildWorkingDir, args: "../mojoshader/CMakeLists.txt");
+        context.StartProcessWithDocker("cmake", workingDirectory: buildWorkingDir, args: "--build . --config release");
         context.CopyFile(System.IO.Path.Combine(buildWorkingDir, "libmojoshader.so"), $"{context.ArtifactsDir}/libmojoshader.so");
     }
 }
