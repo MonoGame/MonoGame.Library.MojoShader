@@ -13,8 +13,14 @@ public sealed class BuildLinuxTask : FrostingTask<BuildContext>
     {
         var buildWorkingDir = "mojoshaderbuild/";
         context.CreateDirectory(buildWorkingDir);
-        context.StartProcessWithDocker("cmake", workingDirectory: buildWorkingDir, args: "../mojoshader/CMakeLists.txt");
-        context.StartProcessWithDocker("cmake", workingDirectory: buildWorkingDir, args: "--build . --config release");
-        context.CopyFile(System.IO.Path.Combine(buildWorkingDir, "libmojoshader.so"), $"{context.ArtifactsDir}/libmojoshader.so");
+        context.StartProcessWithDocker("cmake", new ProcessSettings { WorkingDirectory = buildWorkingDir, Arguments = "../mojoshader/CMakeLists.txt" });
+        context.StartProcessWithDocker("cmake", new ProcessSettings { WorkingDirectory = buildWorkingDir, Arguments = "--build . --config release" });
+        var artifactPath = $"{context.ArtifactsDir}/libmojoshader.so";
+        context.CopyFile(System.IO.Path.Combine(buildWorkingDir, "libmojoshader.so"), artifactPath);
+
+        var stripArguments = new ProcessArgumentBuilder();
+        stripArguments.Append("--strip-unneeded");
+        stripArguments.AppendQuoted(artifactPath);
+        context.StartProcessWithDocker("strip", new ProcessSettings { WorkingDirectory = "", Arguments = stripArguments });
     }
 }
